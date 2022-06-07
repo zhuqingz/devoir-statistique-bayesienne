@@ -1,0 +1,320 @@
+---
+title: "DM Statistique Bayésienne"
+author: "ZhuQing ZHONG"
+date: "30/05/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,warning=FALSE,message=FALSE)
+```
+
+### Importer le jeu de données
+```{r import.dataset}
+d_muta=read.csv("mutations2.csv")
+```
+
+```{r summary.dataset, eval=FALSE}
+summary(d_muta)
+```
+
+```{r head.dataset, eval=FALSE}
+head(d_muta)
+```
+
+### Matrice de corrélation
+```{r correlation.matrix, fig.width=7.5,fig.height=7.5}
+library('corrplot')
+d_cor=cor(d_muta[,6:23])
+corrplot(d_cor)
+```
+
+Comme indiqué par la matrice de corrélation, plusieurs covariables sont fortement corrélées entre eux. Pour cela, il est important de faire une sélection des covariables à inclure dans les modèles.   
+
+### Paramétres globals
+```{r global.setting}
+attach(d_muta)
+options(scipen=5)
+```
+
+# Régression linéaire
+## Question 1
+### Regression Linéaire Fréquentiste
+Tout d'abord, j'ajuste une régression linéaire classique en incluant tous les covariables quantitatives.
+```{r lm.frequentist}
+lm1=lm(Barre~.,d_muta[,6:23])
+summary(lm1)
+```
+
+D'après la sortie de summary():  
+- le p-value du test Fisher Global est <5%, qui soutient l'hypothèse que les coefficients de toutes les covariables sont nulles.  
+- au niveau de confiance à 95%, il n'y a qu'une seule covariable significative : taux_reussite_attendu_serie_l.  
+- au niveau de confiance à 90%, il y a 4 covariables significatives.  
+- le problème de colinéarité existe dans ce modèle, car les coefficients des covariables fortement corrélées s'annulent entre eux. Il est nécessaire de faire une sélection des covariables significatives. 
+
+La qualité de ce modèle est mauvaise avec la valeur de R-squared très petite: 0.0079. 
+
+### Regression Logistique Bayésienne
+Ensuite, j'ajuste une regression linéaire bayésienne en incluant tous les covariables quantitatives.
+```{r lm.bayesienne}
+library(MCMCpack)
+lm_baye1 = MCMCregress(Barre~.,d_muta[,6:23])
+summary(lm_baye1)
+```
+
+L'espérance des coefficients pour chaque covariable, qui est donné par MCMC, sont proches aux coefficients estimés par la regression fréquentiste. 'taux_reussite_attendu_serie_l' est la seule dont l'invervale de crédibilité à 95% ne contient pas 0. Ce modèle bayésien est en accord avec celui de fréquentist ajusté précédemment. 
+
+### vérifier la convergence de MCMC
+
+```{r plot.lm_baye,fig.height=8,fig.width=8}
+plot(lm_baye1)
+```
+
+Les graphes à gauche tracent 1001ième à 11000ième itérations de la Chaîne de Markov. Ces processus apparaissent stationaire et sans mémoire, et ont l'air bien explorer la loi postériori de chaque covariable et de sigma.   
+
+
+```{r raftery.lm_baye}
+raftery.diag(lm_baye1)
+
+```
+
+La diagnostic raftery indique qu'il faut 3746 itérations en minimun pour estimer les coefficients avec un taux de précision à 0.5%. Et la chaine a besoin d'attendre 2 intérations pour atteindre sa loi stationaire.
+Dans cette regression linéaire bayésienne, 11000 itérations ont été effectué en enlevant les premières 1000 itérations, ce qui est donc suffisant pour l'estimation à ce niveau de précision. 
+
+```{r effectivesize.lm_baye}
+effectiveSize(lm_baye1)
+```
+
+Le ESS est suffisamment grand pour chaque covariable, ce qui implique la chaine Markov converge bien. 
+
+
+## Question 2
+Par la suite, je vais sélectionner les covariables significatives et explorer les modèles probables. Afin de réduire le coût computationnel, j'exclure les 5 covaribales 'effectif' dans toutes les analyses suivantes. Les raisons de cette exclusion sont:  
+- les coefficients des 5 covariables sont proches de 0, avec les p_value grandes >0.6, estimés dans la regression fréquentiste.  
+- l'intervalle de crédibilité pour ces 5 covariables se serre aux alentours de 0, estimé dans la regression bayésienne.  
+
+### Sélection des covariables significatives - analyse fréquentist
+Je commence par chercher les meilleurs modèles, au sens de BIC, d'une manière exhausive, à l'aide de fonction regsubsets(). 
+```{r selec}
+library(leaps)
+lm_select=regsubsets(Barre~.,int=T,nbest=2,nvmax=5,method = "exhaustive",data = d_muta[,c(6,10:15,18:23)])
+plot(lm_select,scale="bic")
+```
+
+Les 3 meilleurs modèles selon la critère d'information BIC sont:  
+- 1ier  modèle (1 covariable): taux_acces_attendu_premiere_bac  
+- 2ième modèle (1 covariable): taux_acces_attendu_seconde_bac  
+- 3ième modèle (2 covariables): taux_reussite_attendu_serie_l + taux_acces_attendu_premiere_bac  
+
+A rappeler que le meilleurs modèle probablement contient 0 covariable selon le test du Fisher global(p-value =0.2267 ). 
+
+### Choix des covariables significatives - analyse bayésienne
+```{r bms.lm}
+library(BMS)
+lm_bms=bms(Barre~.,data=d_muta[,c(6,10:15,18:23)],burn=1e3,iter=1e5)
+```
+
+Selon la loi postériori obtenues dans la sortie de bms(), les modèles les plus probables contiennent 0 à 1 covariables.  
+Les covariables les plus probablement significatives sont:  
+- 1ier: taux_acces_attendu_premiere_bac. 19% de la masse à posteriori a besoin de l'inclure.  
+- 2ième: taux_acces_attendu_seconde_bac. 12% de la masse à posteriori a besoin de l'inclure.  
+
+
+```{r image.lm_bms}
+image(lm_bms)
+```
+
+Les 3 meilleurs modèles selon l'approche bayésienne sont:  
+- 1ier  modèle (0 covariable): avec une probabilité de 32%  
+- 2ième modèle (1 covariable): taux_acces_attendu_premiere_bac, avec une probabilité de 16%  
+- 3ième modèle (1 covariable): taux_acces_attendu_seconde_bac  
+
+Pour résumer, l'approche bayésienne est quasiment en accord avec celle fréquentiste au niveau de à la sélection des covariables significative et des meilleurs modèles.  
+
+## Question 3
+
+```{r data.maths}
+d_math=d_muta[Matiere=="MATHS",]
+dim(d_math)
+#summary(d_math)
+```
+
+```{r data.anglais}
+d_eng=d_muta[Matiere=="ANGLAIS",]
+dim(d_eng)
+#summary(d_eng)
+```
+
+### Analyse exploratoire
+```{r scatter.plot}
+library(ggplot2)
+ggplot(d_math, aes(taux_acces_attendu_premiere_bac, Barre,color='math'))+geom_point()+geom_point(data = d_eng, aes(color = "anglais"),alpha=0.7,size=1)+ylim(-10, 610)
+ggplot(d_math, aes(taux_brut_de_reussite_serie_es, Barre,color='math'))+geom_point()+geom_point(data = d_eng, aes(color = "anglais"),alpha=0.7,size=1)+ylim(-10, 610)
+```
+
+En observant les deux graphes ci-dessus, il me semble que la distribution de 'Barre' est différente pour mathématique et anglais, quand la valeur de 'Barre' est supérieur à 85. 
+
+### Analyse Fréquentist 
+
+#### Choix de modèle linéaire pour 'points mutation en mathématique' (fréquentist)
+```{r lm.regsubnets.math}
+lm_math_select=regsubsets(Barre~.,int=T,nbest=2,nvmax=5,method = "exhaustive",data = d_math[,c(6,10:15,18:23)])
+plot(lm_math_select,scale="bic")
+```
+
+
+#### Choix de modèle linéaire pour 'points mutation en anglais' (fréquentist)
+```{r lm.regsubnets.english}
+lm_eng_select=regsubsets(Barre~.,int=T,nbest=2,nvmax=5,method = "exhaustive",data = d_eng[,c(6,10:15,18:23)])
+plot(lm_eng_select,scale="bic")
+```
+
+Dans la sortie de regsubsets(), j'observe que les meilleurs 5 modèles choisissent des différentes covariables pour chacune de deux disciplines. 
+
+Neamoins, il exite un même modèle en commun parmis les meilleurs. Ce modèle contient une covariable seule 'taux_brut_de_reussite_serie_es'. Par la suite, je vais ajuster la regression linéaire pour voir si cette variable agissment de la même manière sur les points de mutation en mathématique et en anglais. 
+
+#### regression linéaire 'mathématique'(fréquentist)
+```{r lm.math}
+lm_math=lm(Barre~taux_brut_de_reussite_serie_es,d_math)
+summary(lm_math)
+```
+#### regression linéaire 'anglais'(fréquentist)
+```{r lm.english}
+lm_eng=lm(Barre~taux_brut_de_reussite_serie_es,d_eng)
+summary(lm_eng)
+```
+
+En comparant la sortie de summary() pour deux disciplines, le coefficient estimé est similaire dans deux modèles. Néanmoins les P-value au niveau du coefficient et du test Fisher Global amènent aux différentes conclusions. Le modèle 'mathématique' considère 'taux_brut_de_reussite_serie_es' très siginificative( les deux p_value <0.005). En contraire, le modèle 'anglais' la considère non significative (les deux p_value >0.15 ), avec le nombre similaire d'observation que mathématique. 
+
+
+### Analyse Bayésienne 
+
+#### Choix de covariables significatives via l'approche bayésienne - mathématique 
+```{r bms.lm_math}
+lm_math_bms=bms(Barre~.,data=d_math[,c(6,10:15,18:23)],burn=5e3,iter=1e5)
+```
+
+```{r image.lm_math_bms}
+image(lm_math_bms)
+```
+
+Selon la masse à posteriori, les modèles les plus probables contiennent 1 covaraibles.  
+
+Les covariables les plus probablement significatives sont:  
+- 1ier: taux_brut_de_reussite_serie_es. 38% de la masse à posteriori a besoin de l'inclure.  
+- 2ième:  taux_brut_de_reussite_serie_l. 14% de la masse à posteriori a besoin de l'inclure.  
+- 3ième: taux_acces_attendu_premiere_bac. 14% de la masse à posteriori a besoin de l'inclure.  
+
+#### Choix de covariables significatives via l'approche bayésienne - discipline anglais
+```{r bms.lm_english}
+lm_eng_bms=bms(Barre~.,data=d_eng[,c(6,10:15,18:23)],burn=5e3,iter=1e5)
+```
+
+```{r image.lm_eng_bms}
+image(lm_eng_bms)
+```
+
+Selon la masse à posteriori, les modèles les plus probables contiennent 0 covaraibles (versus 1 en mathématique).  
+
+Les covariables les plus probablement significatives sont:  
+- 1ier: taux_brut_de_reussite_serie_es. 6% de la masse à posteriori a besoin de l'inclure (versus 38% en mathématique, 1ième).  
+- 2ième:  taux_reussite_attendu_serie_s. 3% de la masse à posteriori a besoin de l'inclure. (versus 4.5% en mathématique, 10ième)  
+- 3ième: taux_reussite_attendu_serie_l. 3% de la masse à posteriori a besoin de l'inclure. (versus 3.6% en mathématique, 12ième)  
+
+Pour résumer, dans l'ensemble des analyses fréquentistes et bayésiennes, j'ai observé que les covariables n'agissent pas de la même manière dans les deux disciplines. 
+
+
+# 2 Loi de Pareto
+
+## Question 4 
+J'utilise l'ensemble des fonctions sous le package 'EnvStats' pour simuler une loi Pareto. 
+```{r }
+library(EnvStats)
+x=seq(1,200,by=0.01)
+plot(x,dpareto(x,21,1),type='l',ylim=c(0,0.12),ylab = 'density')
+par(new=TRUE)
+plot(x,dpareto(x,21,3),type='l',ylim=c(0,0.12),ylab = 'density',col='orange')
+par(new=TRUE)
+plot(x,dpareto(x,21,0.3),type='l',ylim=c(0,0.12),ylab = 'density',col='blue')
+legend(150,0.1, legend=c("alpha=1", "alpha=3","alpha=0.3"),col=c("black", "orange","blue"),lty=c(1,1,1), cex=0.8)
+```
+
+Comme montré par le graphe ci-dessus, plus $\alpha$ est grande, plus la distribution est concentrée dans les petites valeurs et que la queue de distribution est legère. 
+
+## Question 5
+### Loi à priori
+Après recherches sur Internet, il me parait pertinent de choisir une loi gamma, ou une loi gamma inversé étant à priori afin d'obtenir une famille de lois conjugée à ce modèle.  
+
+Je prend donc deux lois à priori suivantes pour la comparaison:  
+- Gamma(1,1)  
+- Gamma(2,2)  
+```{r prior.graphe}
+par(mfrow=c(2,1))
+#lois à priori gamma(1,1) 
+curve(dgamma(x,shape=1,rate=1),from=0, to=5, main="Prior gamma(1,1)", ylab="density")
+#lois à priori gamma(2,2) 
+curve(dgamma(x,shape=2,rate=2),from=0, to=5, main="Prior gamma(2,2)", ylab="density")
+```
+
+## Question 6
+
+### Loi à posteriori par conséquence
+Après un calcul manuel(attaché sur Github), j'ai obtenu la loi à posteriori $\Gamma\left(n+a,\ \ b-n*ln(m)+\sum_{i=1}^{n} ln(y_{i})\right)$, qui correspond à la loi à priori $\Gamma(a,b)$. 
+
+Ci-dessous les graphes qui visualisent les deux lois à posteriori obtenues:
+```{r posterior.graphe}
+n=nrow(d_muta)
+library(SciViews)
+m=21
+sum_lnY=sum(ln(d_muta$Barre))
+par(mfrow=c(2,1))
+#loi à posteriori par conséquence de gamma(1,1) 
+curve(dgamma(x,shape=n+1,rate=1-n*ln(m)+sum_lnY),from=0, to=5, main=" loi Postériori avec priori gamma(1,1)", ylab="density")
+#loi à posteriori par conséquence de gamma(2,2)
+curve(dgamma(x,shape=n+2,rate=2-n*ln(m)+sum_lnY),from=0, to=5, main="loi Postériori avec priori gamma(2,2)", ylab="density")
+
+```
+
+A partir de deux lois à priori différentes, j'ai obtenu les deux lois à postériori quasiment pareilles, avec une variabilité faible.  
+
+## Question 7
+
+```{r 95ICredit.posterior}
+#médian et intervalle de crédibilité à 95%, relative à la loi à priori Gamma(1,1)
+qgamma(p = c(0.025,0.5,0.975),shape=n+1,rate=1-n*ln(m)+sum_lnY)
+#médian et intervalle de crédibilité à 95%, relative à la loi à priori Gamma(2,2)
+qgamma(p = c(0.025,0.5,0.975),shape=n+2,rate=2-n*ln(m)+sum_lnY)
+```
+
+A l'aide de fonction qgamma(), j'ai obtenu l'intervalle de credibilité à 95% [0.41,0.49] pour la paramètre $\alpha$ à partir de sa loi à posteriori.  
+
+## Question 8
+
+En appliquant les mêmes analyses pour chacune de deux disciplines 'mathématique' et 'anglais', j'ai obtenu leur loi à postériori comme visualisé par les graphes ci-dessous:
+```{r posterior.math.anglais,fig.width=9,fig.height=5 }
+n_math=nrow(d_math)
+n_eng=nrow(d_eng)
+sum_lnY_math=sum(ln(d_math$Barre))
+sum_lnY_eng=sum(ln(d_eng$Barre))
+
+par(mfrow=c(2,1))
+#lois à priori gamma(2,2) 
+curve(dgamma(x,shape=2,rate=2),from=0, to=4, main="Prior gamma(2,2)", ylab="density")
+#loi à posteriori par conséquence "math et anglais"
+curve(dgamma(x,shape=n_math+2,rate=2-n_math*ln(m)+sum_lnY_math),from=0, to=4, main="Postériori Math et Anglais", ylab="density")
+par(new=TRUE)
+curve(dgamma(x,shape=n_eng+2,rate=2-n_eng*ln(m)+sum_lnY_eng),from=0, to=4, ylab="density",col='red')
+legend(3.4,6,c('math','anglais'),col=c('black','red'),lty=c(1,1))
+
+```
+
+En observant les courbes pour le 'modèle mathématique' et pour celui d'anglais, je trouve que leur loi à postériori est quasiment pareille.
+
+```{r median.95ICredit.anlais.math}
+qgamma(p = c(0.025,0.5,0.975),shape=n_math+2,rate=2-n_math*ln(m)+sum_lnY_math)
+qgamma(p = c(0.025,0.5,0.975),shape=n_eng+2,rate=2-n_eng*ln(m)+sum_lnY_eng)
+```
+
+L'intervalle de crédibilité à 95% de $\alpha$ pour le modèle mathématique est [0.39, 0.64]. Celle pour le modèle d'anglais est [0.37, 0.63]. Je trouve que ces valeurs sont très proches, ce qui soutient la hypothèse $\alpha_{math}=\alpha_{anglais}$. 
+
+
